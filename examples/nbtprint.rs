@@ -1,5 +1,6 @@
 extern crate nbt;
 extern crate serde_json;
+extern crate byteorder;
 
 use std::env;
 use std::fs;
@@ -8,12 +9,14 @@ use std::process::exit;
 use nbt::Result;
 use nbt::Blob;
 
+use byteorder::BigEndian;
+
 fn run() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     if let Some(arg) = args.into_iter().skip(1).take(1).next() {
         let mut file = fs::File::open(&arg)?;
         println!("================================= NBT Contents =================================");
-        let blob = Blob::from_reader(&mut file)?;
+        let blob = Blob::from_reader::<_, BigEndian>(&mut file)?;
         println!("{}", blob);
         println!("============================== JSON Representation =============================");
         match serde_json::to_string_pretty(&blob) {

@@ -1,11 +1,13 @@
 //! Serialize a Rust data structure into Named Binary Tag data.
 
 use std::io;
+use std::marker::PhantomData;
 
 use serde;
 use serde::ser;
 use flate2::Compression;
 use flate2::write::{GzEncoder, ZlibEncoder};
+use byteorder::ByteOrder;
 
 use raw;
 
@@ -14,34 +16,35 @@ use error::{Error, Result};
 /// Encode `value` in Named Binary Tag format to the given `io::Write`
 /// destination, with an optional header.
 #[inline]
-pub fn to_writer<'a, W, T>(dst: &mut W, value: &T, header: Option<&'a str>)
+pub fn to_writer<'a, W, T, E>(dst: &mut W, value: &T, header: Option<&'a str>)
                            -> Result<()>
     where W: ?Sized + io::Write,
           T: ?Sized + ser::Serialize,
+          E: ByteOrder,
 {
-    let mut encoder = Encoder::new(dst, header);
+    let mut encoder = Encoder::<_, E>::new(dst, header);
     value.serialize(&mut encoder)
 }
 
 /// Encode `value` in Named Binary Tag format to the given `io::Write`
 /// destination, with an optional header.
-pub fn to_gzip_writer<'a, W, T>(dst: &mut W, value: &T, header: Option<&'a str>)
+pub fn to_gzip_writer<'a, W, T, E: ByteOrder>(dst: &mut W, value: &T, header: Option<&'a str>)
                            -> Result<()>
     where W: ?Sized + io::Write,
           T: ?Sized + ser::Serialize,
 {
-    let mut encoder = Encoder::new(GzEncoder::new(dst, Compression::Default), header);
+    let mut encoder = Encoder::<_, E>::new(GzEncoder::new(dst, Compression::Default), header);
     value.serialize(&mut encoder)
 }
 
 /// Encode `value` in Named Binary Tag format to the given `io::Write`
 /// destination, with an optional header.
-pub fn to_zlib_writer<'a, W, T>(dst: &mut W, value: &T, header: Option<&'a str>)
+pub fn to_zlib_writer<'a, W, T, E: ByteOrder>(dst: &mut W, value: &T, header: Option<&'a str>)
                            -> Result<()>
     where W: ?Sized + io::Write,
           T: ?Sized + ser::Serialize,
 {
-    let mut encoder = Encoder::new(ZlibEncoder::new(dst, Compression::Default), header);
+    let mut encoder = Encoder::<_, E>::new(ZlibEncoder::new(dst, Compression::Default), header);
     value.serialize(&mut encoder)
 }
 
@@ -51,16 +54,20 @@ pub fn to_zlib_writer<'a, W, T>(dst: &mut W, value: &T, header: Option<&'a str>)
 /// `serde::Serialize` trait into NBT format. Note that not all types are
 /// representable in NBT format (notably unsigned integers), so this encoder may
 /// return errors.
-pub struct Encoder<'a, W> {
+pub struct Encoder<'a, W, E: ByteOrder> {
     writer: W,
     header: Option<&'a str>,
+    _marker: PhantomData<E>,
 }
 
-impl<'a, W> Encoder<'a, W> where W: io::Write {
+impl<'a, W, E> Encoder<'a, W, E>
+    where W: io::Write,
+          E: ByteOrder,
+{
 
     /// Create an encoder with optional `header` from a given Writer.
     pub fn new(writer: W, header: Option<&'a str>) -> Self {
-        Encoder { writer: writer, header: header }
+        Encoder { writer: writer, header: header, _marker: PhantomData }
     }
 
     /// Write the NBT tag and an optional header to the underlying writer.
@@ -69,48 +76,55 @@ impl<'a, W> Encoder<'a, W> where W: io::Write {
         try!(raw::write_bare_byte(&mut self.writer, tag));
         match header {
             None =>
-                raw::write_bare_short(&mut self.writer, 0).map_err(From::from),
+                raw::write_bare_short::<_, E>(&mut self.writer, 0).map_err(From::from),
             Some(h) =>
-                raw::write_bare_string(&mut self.writer, h).map_err(From::from),
+                raw::write_bare_string::<_, E>(&mut self.writer, h).map_err(From::from),
         }
     }
 }
 
 /// "Inner" version of the NBT encoder, capable of serializing bare types.
-struct InnerEncoder<'a, 'b: 'a, W: 'a> {
-    outer: &'a mut Encoder<'b, W>,
+struct InnerEncoder<'a, 'b: 'a, W: 'a, E: ByteOrder> {
+    outer: &'a mut Encoder<'b, W, E>,
 }
 
-impl<'a, 'b, W> InnerEncoder<'a, 'b, W> where W: io::Write {
-    pub fn from_outer(outer: &'a mut Encoder<'b, W>) -> Self {
+impl<'a, 'b, W, E> InnerEncoder<'a, 'b, W, E>
+    where W: io::Write,
+          E: ByteOrder,
+{
+    pub fn from_outer(outer: &'a mut Encoder<'b, W, E>) -> Self {
         InnerEncoder { outer: outer }
     }
 }
 
 #[doc(hidden)]
-pub struct Compound<'a, 'b: 'a, W: 'a> {
-    outer: &'a mut Encoder<'b, W>,
+pub struct Compound<'a, 'b: 'a, W: 'a, E: ByteOrder> {
+    outer: &'a mut Encoder<'b, W, E>,
     length: i32,
     sigil: bool,
 }
 
-impl<'a, 'b, W> Compound<'a, 'b, W> where W: io::Write {
-    fn from_outer(outer: &'a mut Encoder<'b, W>) -> Self {
+impl<'a, 'b, W, E> Compound<'a, 'b, W, E>
+    where W: io::Write,
+          E: ByteOrder,
+{
+    fn from_outer(outer: &'a mut Encoder<'b, W, E>) -> Self {
         Compound { outer: outer, length: 0, sigil: false }
     }
 
-    fn for_seq(outer: &'a mut Encoder<'b, W>, length: i32) -> Result<Self> {
+    fn for_seq(outer: &'a mut Encoder<'b, W, E>, length: i32) -> Result<Self> {
         // For an empty list, write TAG_End as the tag type.
         if length == 0 {
             raw::write_bare_byte(&mut outer.writer, 0x00)?;
-            raw::write_bare_int(&mut outer.writer, 0)?;
+            raw::write_bare_int::<_, E>(&mut outer.writer, 0)?;
         }
         Ok(Compound { outer: outer, length: length, sigil: false })
     }
 }
 
-impl<'a, 'b, W> ser::SerializeSeq for Compound<'a, 'b, W>
-    where W: io::Write
+impl<'a, 'b, W, E> ser::SerializeSeq for Compound<'a, 'b, W, E>
+    where W: io::Write,
+          E: ByteOrder,
 {
     type Ok = ();
     type Error = Error;
@@ -120,7 +134,7 @@ impl<'a, 'b, W> ser::SerializeSeq for Compound<'a, 'b, W>
     {
         if !self.sigil {
             value.serialize(&mut TagEncoder::from_outer(self.outer, Option::<String>::None))?;
-            raw::write_bare_int(&mut self.outer.writer, self.length)?;
+            raw::write_bare_int::<_, E>(&mut self.outer.writer, self.length)?;
             self.sigil = true;
         }
         value.serialize(&mut InnerEncoder::from_outer(self.outer))
@@ -131,8 +145,9 @@ impl<'a, 'b, W> ser::SerializeSeq for Compound<'a, 'b, W>
     }
 }
 
-impl<'a, 'b, W> ser::SerializeStruct for Compound<'a, 'b, W>
-    where W: io::Write
+impl<'a, 'b, W, E> ser::SerializeStruct for Compound<'a, 'b, W, E>
+    where W: io::Write,
+          E: ByteOrder,
 {
     type Ok = ();
     type Error = Error;
@@ -150,8 +165,9 @@ impl<'a, 'b, W> ser::SerializeStruct for Compound<'a, 'b, W>
     }
 }
 
-impl<'a, 'b, W> ser::SerializeMap for Compound<'a, 'b, W>
-    where W: io::Write
+impl<'a, 'b, W, E> ser::SerializeMap for Compound<'a, 'b, W, E>
+    where W: io::Write,
+          E: ByteOrder,
 {
     type Ok = ();
     type Error = Error;
@@ -181,15 +197,18 @@ impl<'a, 'b, W> ser::SerializeMap for Compound<'a, 'b, W>
     }
 }
 
-impl<'a, 'b, W> serde::Serializer for &'a mut Encoder<'b, W> where W: io::Write {
+impl<'a, 'b, W, E> serde::Serializer for &'a mut Encoder<'b, W, E>
+    where W: io::Write,
+          E: ByteOrder,
+{
     type Ok = ();
     type Error = Error;
     type SerializeSeq = ser::Impossible<(), Error>;
     type SerializeTuple = ser::Impossible<(), Error>;
     type SerializeTupleStruct = ser::Impossible<(), Error>;
     type SerializeTupleVariant = ser::Impossible<(), Error>;
-    type SerializeMap = Compound<'a, 'b, W>;
-    type SerializeStruct = Compound<'a, 'b, W>;
+    type SerializeMap = Compound<'a, 'b, W, E>;
+    type SerializeStruct = Compound<'a, 'b, W, E>;
     type SerializeStructVariant = ser::Impossible<(), Error>;
 
     return_expr_for_serialized_types!(
@@ -235,15 +254,18 @@ impl<'a, 'b, W> serde::Serializer for &'a mut Encoder<'b, W> where W: io::Write 
     }
 }
 
-impl<'a, 'b, W> serde::Serializer for &'a mut InnerEncoder<'a, 'b, W> where W: io::Write {
+impl<'a, 'b, W, E> serde::Serializer for &'a mut InnerEncoder<'a, 'b, W, E>
+    where W: io::Write,
+          E: ByteOrder,
+{
     type Ok = ();
     type Error = Error;
-    type SerializeSeq = Compound<'a, 'b, W>;
+    type SerializeSeq = Compound<'a, 'b, W, E>;
     type SerializeTuple = ser::Impossible<(), Error>;
     type SerializeTupleStruct = ser::Impossible<(), Error>;
     type SerializeTupleVariant = ser::Impossible<(), Error>;
-    type SerializeMap = Compound<'a, 'b, W>;
-    type SerializeStruct = Compound<'a, 'b, W>;
+    type SerializeMap = Compound<'a, 'b, W, E>;
+    type SerializeStruct = Compound<'a, 'b, W, E>;
     type SerializeStructVariant = ser::Impossible<(), Error>;
 
     unrepresentable!(
@@ -264,37 +286,37 @@ impl<'a, 'b, W> serde::Serializer for &'a mut InnerEncoder<'a, 'b, W> where W: i
 
     #[inline]
     fn serialize_i16(self, value: i16) -> Result<()> {
-        raw::write_bare_short(&mut self.outer.writer, value)
+        raw::write_bare_short::<_, E>(&mut self.outer.writer, value)
             .map_err(From::from)
     }
 
     #[inline]
     fn serialize_i32(self, value: i32) -> Result<()> {
-        raw::write_bare_int(&mut self.outer.writer, value)
+        raw::write_bare_int::<_, E>(&mut self.outer.writer, value)
             .map_err(From::from)
     }
 
     #[inline]
     fn serialize_i64(self, value: i64) -> Result<()> {
-        raw::write_bare_long(&mut self.outer.writer, value)
+        raw::write_bare_long::<_, E>(&mut self.outer.writer, value)
             .map_err(From::from)
     }
 
     #[inline]
     fn serialize_f32(self, value: f32) -> Result<()> {
-        raw::write_bare_float(&mut self.outer.writer, value)
+        raw::write_bare_float::<_, E>(&mut self.outer.writer, value)
             .map_err(From::from)
     }
 
     #[inline]
     fn serialize_f64(self, value: f64) -> Result<()> {
-        raw::write_bare_double(&mut self.outer.writer, value)
+        raw::write_bare_double::<_, E>(&mut self.outer.writer, value)
             .map_err(From::from)
     }
 
     #[inline]
     fn serialize_str(self, value: &str) -> Result<()> {
-        raw::write_bare_string(&mut self.outer.writer, value)
+        raw::write_bare_string::<_, E>(&mut self.outer.writer, value)
             .map_err(From::from)
     }
 
@@ -351,18 +373,22 @@ impl<'a, 'b, W> serde::Serializer for &'a mut InnerEncoder<'a, 'b, W> where W: i
 }
 
 /// A serializer for valid map keys, i.e. strings.
-struct MapKeyEncoder<'a, 'b: 'a, W: 'a> {
-    outer: &'a mut Encoder<'b, W>,
+struct MapKeyEncoder<'a, 'b: 'a, W: 'a, E: ByteOrder> {
+    outer: &'a mut Encoder<'b, W, E>,
 }
 
-impl<'a, 'b: 'a, W: 'a> MapKeyEncoder<'a, 'b, W> where W: io::Write {
-    pub fn from_outer(outer: &'a mut Encoder<'b, W>) -> Self {
+impl<'a, 'b: 'a, W: 'a, E> MapKeyEncoder<'a, 'b, W, E>
+    where W: io::Write,
+          E: ByteOrder,
+{
+    pub fn from_outer(outer: &'a mut Encoder<'b, W, E>) -> Self {
         MapKeyEncoder { outer: outer }
     }
 }
 
-impl<'a, 'b: 'a, W: 'a> serde::Serializer for &'a mut MapKeyEncoder<'a, 'b, W>
-    where W: io::Write
+impl<'a, 'b: 'a, W: 'a, E> serde::Serializer for &'a mut MapKeyEncoder<'a, 'b, W, E>
+    where W: io::Write,
+          E: ByteOrder,
 {
     type Ok = ();
     type Error = Error;
@@ -391,21 +417,22 @@ impl<'a, 'b: 'a, W: 'a> serde::Serializer for &'a mut MapKeyEncoder<'a, 'b, W>
     }
 
     fn serialize_str(self, value: &str) -> Result<()> {
-        raw::write_bare_string(&mut self.outer.writer, value)
+        raw::write_bare_string::<_, E>(&mut self.outer.writer, value)
     }
 }
 
 /// A serializer for valid map keys.
-struct TagEncoder<'a, 'b: 'a, W: 'a, K> {
-    outer: &'a mut Encoder<'b, W>,
+struct TagEncoder<'a, 'b: 'a, W: 'a, K, E: ByteOrder> {
+    outer: &'a mut Encoder<'b, W, E>,
     key: Option<K>,
 }
 
-impl<'a, 'b: 'a, W: 'a, K> TagEncoder<'a, 'b, W, K>
+impl<'a, 'b: 'a, W: 'a, K, E> TagEncoder<'a, 'b, W, K, E>
 where W: io::Write,
-      K: serde::Serialize
+      K: serde::Serialize,
+      E: ByteOrder,
 {
-    fn from_outer(outer: &'a mut Encoder<'b, W>, key: Option<K>) -> Self {
+    fn from_outer(outer: &'a mut Encoder<'b, W, E>, key: Option<K>) -> Self {
         TagEncoder {
             outer: outer, key: key
         }
@@ -418,9 +445,10 @@ where W: io::Write,
     }
 }
 
-impl<'a, 'b: 'a, W: 'a, K> serde::Serializer for &'a mut TagEncoder<'a, 'b, W, K>
+impl<'a, 'b: 'a, W: 'a, K, E> serde::Serializer for &'a mut TagEncoder<'a, 'b, W, K, E>
 where W: io::Write,
-      K: serde::Serialize
+      K: serde::Serialize,
+      E: ByteOrder,
 {
     type Ok = ();
     type Error = Error;

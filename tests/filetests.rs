@@ -4,12 +4,14 @@
 
 #[macro_use] extern crate serde_derive;
 extern crate serde;
+extern crate byteorder;
 
 extern crate nbt;
 
 use std::fs::File;
 
 use nbt::de::{from_reader, from_gzip_reader};
+use byteorder::BigEndian;
 
 // Include structure definitions.
 include!("data.rs.in");
@@ -18,7 +20,7 @@ include!("data.rs.in");
 fn deserialize_small1() {
     let nbt = Small1 { name: "Bananrama".to_string() };
     let mut file = File::open("tests/small1.nbt").unwrap();
-    let read: Small1 = from_reader(&mut file).unwrap();
+    let read: Small1 = from_reader::<_, _, BigEndian>(&mut file).unwrap();
     assert_eq!(nbt, read)
 }
 
@@ -29,7 +31,7 @@ fn deserialize_small2() {
         bbb: Small2Sub { one: 17, two: 4386, three: 287454020 }
     };
     let mut file = File::open("tests/small2.nbt").unwrap();
-    let read: Small2 = from_reader(&mut file).unwrap();
+    let read: Small2 = from_reader::<_, _, BigEndian>(&mut file).unwrap();
     assert_eq!(nbt, read)
 }
 
@@ -42,7 +44,7 @@ fn deserialize_small3() {
         ]
     };
     let mut file = File::open("tests/small3.nbt").unwrap();
-    let read: Small3 = from_reader(&mut file).unwrap();
+    let read: Small3 = from_reader::<_, _, BigEndian>(&mut file).unwrap();
     assert_eq!(nbt, read)
 }
 
@@ -53,7 +55,7 @@ fn deserialize_small4() {
         c2: Small4Sub { aaa: 17, bbb: 34, ccc: 51, ddd: 68 }
     };
     let mut file = File::open("tests/small4.nbt").unwrap();
-    let read: Small4 = from_reader(&mut file).unwrap();
+    let read: Small4 = from_reader::<_, _, BigEndian>(&mut file).unwrap();
     assert_eq!(nbt, read)
 }
 
@@ -161,24 +163,24 @@ fn deserialize_big1() {
         int_test: 2147483647,
     };
     let mut file = File::open("tests/big1.nbt").unwrap();
-    let read: Big1 = from_gzip_reader(&mut file).unwrap();
+    let read: Big1 = from_gzip_reader::<_, _, BigEndian>(&mut file).unwrap();
     assert_eq!(nbt, read)
 }
 
 #[test]
 fn deserialize_simple_player() {
     let mut file = File::open("tests/simple_player.dat").unwrap();
-    let _: PlayerData = from_gzip_reader(&mut file).unwrap();
+    let _: PlayerData = from_gzip_reader::<_, _, BigEndian>(&mut file).unwrap();
 }
 
 #[test]
 fn deserialize_complex_player() {
     let mut file = File::open("tests/complex_player.dat").unwrap();
-    let _: PlayerData = from_gzip_reader(&mut file).unwrap();
+    let _: PlayerData = from_gzip_reader::<_, _, BigEndian>(&mut file).unwrap();
 }
 
 #[test]
 fn deserialize_level() {
     let mut file = File::open("tests/level.dat").unwrap();
-    let _: Level = from_gzip_reader(&mut file).unwrap();
+    let _: Level = from_gzip_reader::<_, _, BigEndian>(&mut file).unwrap();
 }

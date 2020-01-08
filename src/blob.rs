@@ -3,7 +3,7 @@ use std::fmt;
 use std::io;
 use std::ops::Index;
 
-use byteorder::WriteBytesExt;
+use byteorder::{ByteOrder, WriteBytesExt};
 use flate2::Compression;
 use flate2::read::{GzDecoder, ZlibDecoder};
 use flate2::write::{GzEncoder, ZlibEncoder};
@@ -23,7 +23,9 @@ use value::Value;
 /// (through Gzip or zlib compression) methods.
 ///
 /// ```rust
+/// extern crate byteorder;
 /// use nbt::{Blob, Value};
+/// use byteorder::BigEndian;
 ///
 /// // Create a `Blob` from key/value pairs.
 /// let mut nbt = Blob::new();
@@ -33,7 +35,7 @@ use value::Value;
 ///
 /// // Write a compressed binary representation to a byte array.
 /// let mut dst = Vec::new();
-/// nbt.to_zlib_writer(&mut dst).unwrap();
+/// nbt.to_zlib_writer::<_, BigEndian>(&mut dst).unwrap();
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Blob {
@@ -53,17 +55,18 @@ impl Blob {
     }
 
     /// Extracts an `Blob` object from an `io::Read` source.
-    pub fn from_reader<R>(src: &mut R) -> Result<Blob>
-        where R: io::Read
+    pub fn from_reader<R, E>(src: &mut R) -> Result<Blob>
+        where R: io::Read,
+              E: ByteOrder,
     {
-        let (tag, title) = try!(raw::emit_next_header(src));
+        let (tag, title) = try!(raw::emit_next_header::<_, E>(src));
         // Although it would be possible to read NBT format files composed of
         // arbitrary objects using the current API, by convention all files
         // have a top-level Compound.
         if tag != 0x0a {
             return Err(Error::NoRootCompound);
         }
-        let content = try!(Value::from_reader(tag, src));
+        let content = try!(Value::from_reader::<_, E>(tag, src));
         match content {
             Value::Compound(map) => Ok(Blob { title: title, content: map }),
             _ => Err(Error::NoRootCompound),
@@ -72,51 +75,56 @@ impl Blob {
 
     /// Extracts an `Blob` object from an `io::Read` source that is
     /// compressed using the Gzip format.
-    pub fn from_gzip_reader<R>(src: &mut R) -> Result<Blob>
-        where R: io::Read
+    pub fn from_gzip_reader<R, E>(src: &mut R) -> Result<Blob>
+        where R: io::Read,
+              E: ByteOrder,
     {
         // Reads the gzip header, and fails if it is incorrect.
         let mut data = try!(GzDecoder::new(src));
-        Blob::from_reader(&mut data)
+        Blob::from_reader::<_, E>(&mut data)
     }
 
     /// Extracts an `Blob` object from an `io::Read` source that is
     /// compressed using the zlib format.
-    pub fn from_zlib_reader<R>(src: &mut R) -> Result<Blob>
-        where R: io::Read
+    pub fn from_zlib_reader<R, E>(src: &mut R) -> Result<Blob>
+        where R: io::Read,
+              E: ByteOrder,
     {
-        Blob::from_reader(&mut ZlibDecoder::new(src))
+        Blob::from_reader::<_, E>(&mut ZlibDecoder::new(src))
     }
 
     /// Writes the binary representation of this `Blob` to an `io::Write`
     /// destination.
-    pub fn to_writer<W>(&self, mut dst: &mut W) -> Result<()>
-        where W: io::Write
+    pub fn to_writer<W, E>(&self, mut dst: &mut W) -> Result<()>
+        where W: io::Write,
+              E: ByteOrder,
     {
         dst.write_u8(0x0a)?;
-        raw::write_bare_string(&mut dst, &self.title)?;
+        raw::write_bare_string::<_, E>(&mut dst, &self.title)?;
         for (name, ref nbt) in self.content.iter() {
             dst.write_u8(nbt.id())?;
-            raw::write_bare_string(&mut dst, name)?;
-            nbt.to_writer(&mut dst)?;
+            raw::write_bare_string::<_, E>(&mut dst, name)?;
+            nbt.to_writer::<_, E>(&mut dst)?;
         }
         raw::close_nbt(&mut dst)
     }
 
     /// Writes the binary representation of this `Blob`, compressed using
     /// the Gzip format, to an `io::Write` destination.
-    pub fn to_gzip_writer<W>(&self, dst: &mut W) -> Result<()>
-        where W: io::Write
+    pub fn to_gzip_writer<W, E>(&self, dst: &mut W) -> Result<()>
+        where W: io::Write,
+              E: ByteOrder,
     {
-        self.to_writer(&mut GzEncoder::new(dst, Compression::Default))
+        self.to_writer::<_, E>(&mut GzEncoder::new(dst, Compression::Default))
     }
 
     /// Writes the binary representation of this `Blob`, compressed using
     /// the Zlib format, to an `io::Write` dst.
-    pub fn to_zlib_writer<W>(&self, dst: &mut W) -> Result<()>
-        where W: io::Write
+    pub fn to_zlib_writer<W, E>(&self, dst: &mut W) -> Result<()>
+        where W: io::Write,
+              E: ByteOrder,
     {
-        self.to_writer(&mut ZlibEncoder::new(dst, Compression::Default))
+        self.to_writer::<_, E>(&mut ZlibEncoder::new(dst, Compression::Default))
     }
 
     /// Insert an `Value` with a given name into this `Blob` object. This
@@ -146,7 +154,7 @@ impl Blob {
     }
 
     /// Tries to get a named `Value` in the blob.
-    pub fn get<S>(&self, name: S) -> Option<&Value> 
+    pub fn get<S>(&self, name: S) -> Option<&Value>
         where S: Into<&'static str>
     {
         self.content.get(name.into())
